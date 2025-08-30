@@ -1,0 +1,4 @@
+aiohttp==3.12.14
+psycopg2==2.9.10
+prometheus_client==0.22.1
+scapy==2.6.1
