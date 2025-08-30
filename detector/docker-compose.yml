@@ -16,6 +16,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile-vpn
+    dns:
+      - 8.8.8.8
     healthcheck:
       test: ["CMD", "ping", "-c", "1", "-W", "2", "10.8.0.1"]
       interval: 30s
