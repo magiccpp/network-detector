@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  detector-no-vpn:
+    build:
+      context: .
+      dockerfile: Dockerfile-no-vpn
+    volumes:
+      - ./detector.py:/app/detector.py
+      - ./requirements.txt:/app/requirements.txt
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  detector-vpn:
+    build:
+      context: .
+      dockerfile: Dockerfile-vpn
+    healthcheck:
+      test: ["CMD", "ping", "-c", "1", "-W", "2", "10.8.0.1"]
+      interval: 30s
+      timeout: 5s
+      retries: 2
+      start_period: 10s
+    volumes:
+      - ./detector.py:/app/detector.py
+      - ./requirements.txt:/app/requirements.txt
+      - ./openvpn.ovpn:/etc/openvpn/openvpn.ovpn
+    ports:
+      - "8081:8080"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    restart: unless-stopped
+
+  db:
+    image: postgres
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: example
+      TZ: Asia/Shanghai
+    ports:
+      - 5432:5432
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+
+volumes:
+  pgdata:
