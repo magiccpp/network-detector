@@ -12,6 +12,26 @@ import asyncio
 import aiohttp
 from scapy.all import rdpcap, IP
 from prometheus_client import Counter, start_http_server
+import ipaddress
+import signal
+
+conn = None  
+
+def cleanup(signum, frame):
+    global conn
+    print(f"Received signal {signum}, cleaning up...")
+    if conn:
+        try:
+            conn.close()
+            print("Database connection closed.")
+        except Exception as e:
+            print(f"Error closing connection: {e}")
+    sys.exit(0)
+
+# Register handlers
+signal.signal(signal.SIGINT, cleanup)   # Ctrl-C
+signal.signal(signal.SIGTERM, cleanup)  # kill
+
 
 # Define Prometheus metrics
 gateway_received_bytes_total = Counter(
@@ -69,6 +89,27 @@ def is_file_being_written(filepath):
         print("Error: lsof not found. Please install it (e.g., sudo apt install lsof). Cannot reliably check for open files.")
         sys.exit(1)  # or return False, depending on desired behavior
 
+def extract_domain_name(filepath):
+    # TODO extract the domain name from the trace file for DNS
+    domain_to_times = defaultdict(set)
+
+    try:
+        packets = rdpcap(filepath)
+        for packet in packets:
+            if IP in packet:
+                # Extract DNS queries
+                if packet.haslayer('DNS') and packet['DNS'].qr == 0:  # Query
+                    domain_name = packet['DNS'].qd.qname.decode()
+                    # we skip the domain names ends with ".cn"
+                    if domain_name.endswith(".cn."):
+                        continue
+                    print(f"domain_name captured: {domain_name}")
+                    domain_to_times[domain_name].add(float(packet.time))
+    except Exception as e:
+        print(f"Error processing {filepath}: {e}")
+    return {k: sorted(v) for k, v in domain_to_times.items()}
+
+
 
 def extract_unique_ip_ports_with_time(filepath, local_ips):
     """Extracts unique IP addresses and their associated ports from a pcap file using scapy."""
@@ -93,14 +134,15 @@ def extract_unique_ip_ports_with_time(filepath, local_ips):
 
                 
                 # if both src and dst IP are in the 10.8.x.x or 192.168.x.x, ignore it
-                if (src_ip.startswith("10.8.") or src_ip.startswith("192.168.")) and (dst_ip.startswith("10.8.") or dst_ip.startswith("192.168.")):
+                if is_local(src_ip, local_ips) and is_local(dst_ip, local_ips):
+                    #print(f"local traffic found: src_ip {src_ip} dst_ip: {dst_ip}, skipping")
                     continue
 
                 # get the device name from the first part of file name before '-'
                 device_name = os.path.basename(filepath).split('-')[0]
-                if dst_ip in  local_ips:
+                if is_local(dst_ip, local_ips):
                     gateway_received_bytes_total.labels(device=device_name).inc(bytes_len)
-                elif src_ip in local_ips:
+                elif is_local(src_ip, local_ips):
                     gateway_transmitted_bytes_total.labels(device=device_name).inc(bytes_len)
 
                 # Extract ports if TCP or UDP layers are present
@@ -140,30 +182,48 @@ def create_ip_route_table(conn):
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS IP_ROUTE_TEST_RESULT (
                     ip_address inet,
-                    gateway inet,
+                    gateway_name varchar(50),
                     rtt integer,
                     create_time timestamp with time zone NOT NULL DEFAULT now(),
-                    PRIMARY KEY (ip_address, gateway),
+                    PRIMARY KEY (ip_address, gateway_name),
                     FOREIGN KEY (ip_address) REFERENCES IP_ROUTE_TABLE(ip_address) ON DELETE CASCADE
                 );
             """)
             print("IP_ROUTE_TEST_RESULT created or already exists.")
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS DOMAIN_NAME_TABLE (
+                    domain_name varchar(253),
+                    create_time timestamp with time zone NOT NULL DEFAULT now(),
+                    last_hit_time timestamp with time zone NOT NULL DEFAULT now(),
+                    PRIMARY KEY (domain_name)
+                );
+            """)
+
             conn.commit()
             return True
     except psycopg2.Error as e:
         print(f"Error creating IP_ROUTE_TABLE: {e}")
         return False
+    
 
-def insert_or_update_ips(conn, ip_port_to_times, local_ips, default_gateway):
+def is_local(ip, local_ips):
+    local_networks = [ipaddress.ip_network(cidr) for cidr in local_ips]
+    ip_obj = ipaddress.ip_address(ip)
+    return any(ip_obj in net for net in local_networks)
+
+def insert_or_update_ips(conn, ip_port_to_times, local_ips):
     """Inserts or updates IP addresses and their ports in the database, excluding the local IP."""
+
     try:
         with conn.cursor() as cur:
             for (ip, port), timestamps in ip_port_to_times.items():
-                if ip in local_ips:
+                if is_local(ip, local_ips):
+                    #print(f"local ip found: {ip}, skipping")
                     continue  # Skip the local IP
 
                 # get the maximum timestamp from timestamps
                 max_timestamp = max(timestamps)
+
                 try:
                     cur.execute("""
                         INSERT INTO IP_ROUTE_TABLE (ip_address, port, last_hit_time)
@@ -174,6 +234,7 @@ def insert_or_update_ips(conn, ip_port_to_times, local_ips, default_gateway):
                                 last_hit_time = GREATEST(IP_ROUTE_TABLE.last_hit_time, EXCLUDED.last_hit_time);
                     """, (ip, port, max_timestamp))
                 except psycopg2.errors.InvalidTextRepresentation as e:
+                    conn.rollback()
                     print(f"Skipping invalid IP address or port: {ip}:{port} due to: {e}")
                     continue
 
@@ -184,10 +245,71 @@ def insert_or_update_ips(conn, ip_port_to_times, local_ips, default_gateway):
         return False
     return True
 
+def insert_or_update_domains(conn, domain_to_times):
+    try:
+        with conn.cursor() as cur:
+            for domain, timestamps in domain_to_times.items():
+                # get the maximum timestamp from timestamps
+                max_timestamp = max(timestamps)
+                
+                try:
+                    cur.execute("""
+                        INSERT INTO DOMAIN_NAME_TABLE (domain_name, last_hit_time)
+                        VALUES (%s, to_timestamp(%s))
+                        ON CONFLICT (domain_name) 
+                            DO UPDATE SET 
+                                last_hit_time = GREATEST(DOMAIN_NAME_TABLE.last_hit_time, EXCLUDED.last_hit_time);
+                    """, (domain, max_timestamp))
+                except psycopg2.errors.InvalidTextRepresentation as e:
+                    conn.rollback()
+                    print(f"Skipping invalid Domain: {domain} due to: {e}")
+                    continue
 
+        
+        print(f"Inserted/Updated {len(domain_to_times)} domains in the database.")
+    except psycopg2.Error as e:
+        print(f"Error inserting/updating domains in the database: {e}")
+        return False
+    return True
+
+def purge_old_records(conn, max_days_to_keep=7):
+    """Delete rows whose last_hit_time is older than max_days_to_keep days."""
+    try:
+        with conn.cursor() as cur:
+            # DOMAIN_NAME_TABLE
+            cur.execute("""
+                WITH del AS (
+                    DELETE FROM DOMAIN_NAME_TABLE
+                    WHERE last_hit_time < NOW() - make_interval(days => %s)
+                    RETURNING 1
+                )
+                SELECT count(*) FROM del;
+            """, (max_days_to_keep,))
+            domains_deleted = cur.fetchone()[0]
+
+            # IP_ROUTE_TABLE (IP_ROUTE_TEST_RESULT rows will cascade-delete)
+            cur.execute("""
+                WITH del AS (
+                    DELETE FROM IP_ROUTE_TABLE
+                    WHERE last_hit_time < NOW() - make_interval(days => %s)
+                    RETURNING 1
+                )
+                SELECT count(*) FROM del;
+            """, (max_days_to_keep,))
+            ips_deleted = cur.fetchone()[0]
+
+        conn.commit()
+        if domains_deleted > 0 or ips_deleted > 0:
+            print(f"Purged {domains_deleted} domains and {ips_deleted} IPs older than {max_days_to_keep} days.")
+        return True
+    except psycopg2.Error as e:
+        conn.rollback()
+        print(f"Error purging old records: {e}")
+        return False
 
 
 def main():
+    global conn
     args = parse_arguments()
     config = read_config(args.config)
 
@@ -196,6 +318,8 @@ def main():
     metrics_listen_port = config.get("metrics_listen_port", 8100)
     raw_file_dir = config.get("raw_file_directory", "raw_files")
     local_ips = config.get("local_ips", [])
+    waiting_interval = config.get("waiting_interval", 5)
+    max_days_to_keep = config.get("max_days_to_keep", 7)
 
     # Start Prometheus metrics server
     start_http_server(metrics_listen_port)
@@ -242,24 +366,31 @@ def main():
                 #os.remove(filepath)
                 continue
 
+            if "dns" in os.path.basename(filepath):
+                print(f"Processing DNS Traffic {filepath}")
+                domain_to_times = extract_domain_name(filepath)
+                if domain_to_times:
+                    insert_or_update_domains(conn, domain_to_times)
+            else:
+                print(f"Processing IP Traffic {filepath}")
+                ip_port_to_times = extract_unique_ip_ports_with_time(filepath, local_ips)
 
-            print(f"Processing {filepath}")
-            ip_port_to_times = extract_unique_ip_ports_with_time(filepath, local_ips)
+                # print out the numbers in ip_port_to_times
+                print(f"len(ip_port_to_times): {len(ip_port_to_times)}")
 
-            if ip_port_to_times:
-                insert_or_update_ips(conn, ip_port_to_times, local_ips)
+                if ip_port_to_times:
+                    insert_or_update_ips(conn, ip_port_to_times, local_ips)
 
             # remove the file
             print(f"deleting {filepath}")
             os.remove(filepath)
+            
+        # purge old rows
+        purge_old_records(conn, max_days_to_keep)
 
         # to sleep few seconds before the next iteration
+        print(f"wait for {waiting_interval} seconds...")
         time.sleep(waiting_interval)
-        
-
-    conn.close()
-    print("Done.")
-
 
 if __name__ == "__main__":
     main()

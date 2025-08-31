@@ -8,6 +8,7 @@
     },
     "local_ips": ["192.168.0.0/16", "10.8.0.0/16"],
     "metrics_listen_port": 8100,
-    "raw_file_directory": "raw_files",
-    "waiting_interval": 1
+    "raw_file_directory": "/var/logs/router_raw_files",
+    "waiting_interval": 5,
+    "max_days_to_keep": 7
 }

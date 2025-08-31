@@ -52,6 +52,39 @@ cp router/chn_domains.txt /etc/dnsmasq.d
 ## Set the route for Chinese DNS server
 sudo nmcli connection modify eth0 +ipv4.routes "116.228.111.118/32 <your Chinese gateway IP address>"
 
+## Setup the trace capturing service
+```
+sudo cp router/capture_network.sh /usr/local/bin/capture_network.sh
+```
+
+sudo vim /etc/systemd/system/capture_network.service
+```
+[Unit]
+Description=Network Capture with tcpdump on tun0, eth0, eth1
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/capture_network.sh
+ExecStop=/bin/kill -SIGINT $MAINPID
+Restart=on-failure
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Start up the trace capturing service
+```
+sudo systemctl daemon-reload
+sudo systemctl enable capture_network.service
+sudo systemctl start capture_network.service
+```
+
+
+
 # Setup the detector
 ## Make sure your laptop doesn't sleep (optional)
 if you are using an old laptop, need to make sure the laptop does not sleep when the lid is closed.

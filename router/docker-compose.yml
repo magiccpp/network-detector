@@ -1,0 +1,43 @@
+services:
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.netdev'
+      - '--collector.netstat'
+      - '--web.listen-address=0.0.0.0:9100'
+
+  process-exporter:
+    image: ncabatoff/process-exporter:latest
+    container_name: process-exporter
+    restart: unless-stopped
+    ports:
+      - "9256:9256"
+    volumes:
+      - ./process-exporter.yml:/etc/process-exporter.yml:ro
+      - /proc:/host/proc:ro  # Mount the host's /proc directory
+    command:
+      - '--config.path=/etc/process-exporter.yml'
+      - '--procfs=/host/proc'  # Crucial: Specify the procfs path
+
+
+
+  ip-inserter: # insert new IP into the database
+    build: 
+      context: ip-inserter
+    restart: unless-stopped
+    ports:
+      - "8100:8100"
+    volumes: 
+      - /var/logs/router_raw_files/:/var/logs/router_raw_files/
+      - ./ip-inserter/config.json:/app/config.json

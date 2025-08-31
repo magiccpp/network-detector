@@ -1,0 +1,27 @@
+{
+    "database": {
+        "name": "postgres",
+        "user": "postgres",
+        "password": "example",
+        "host": "192.168.71.104",
+        "port": 5432
+    },
+    "gateways_to_mesure": [
+        {
+            "name": "gateway_no_vpn",
+            "measure_rtt_service_ip": "localhost",
+            "measure_rtt_service_port": 8080,
+            "default": false,
+            "gateway_ip": "192.168.71.1"
+        }, {
+            "name": "gateway_vpn",
+            "measure_rtt_service_ip": "localhost",
+            "measure_rtt_service_port": 8081,
+            "default": true
+            
+        }
+    ],
+    "update_route_threshold": 1.4,
+    "route_stale_hours": 72,
+    "waiting_interval": 100
+}
