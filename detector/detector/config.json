@@ -1,0 +1,23 @@
+{
+    "database": {
+        "name": "postgres",
+        "user": "postgres",
+        "password": "example",
+        "host": "localhost",
+        "port": 5432
+    },
+    "gateways_to_mesure": [
+        {
+            "name": "gateway_no_vpn",
+            "measure_rtt_service_ip": "localhost",
+            "measure_rtt_service_port": 8080
+        }, {
+            "name": "gateway_vpn",
+            "measure_rtt_service_ip": "localhost",
+            "measure_rtt_service_port": 8081
+        }
+    ],
+    "recent_ip_window_hours": 1,
+    "test_result_stale_hours": 24,
+    "waiting_time_interval": 5
+}
