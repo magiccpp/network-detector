@@ -3,7 +3,7 @@ version: '3.8'
 services:
   detector-no-vpn:
     build:
-      context: .
+      context: measure-rtt-service
       dockerfile: Dockerfile-no-vpn
     volumes:
       - ./detector.py:/app/detector.py
@@ -14,7 +14,7 @@ services:
 
   detector-vpn:
     build:
-      context: .
+      context: measure-rtt-service
       dockerfile: Dockerfile-vpn
     dns:
       - 8.8.8.8
